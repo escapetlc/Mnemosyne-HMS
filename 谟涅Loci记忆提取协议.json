@@ -1,0 +1,248 @@
+{
+  "protocol": "谟涅Loci记忆提取协议",
+  "name": "Mnemosyne Loci Memory Extraction Protocol",
+  "version": "1.0",
+  "date": "2026-07-16",
+  "description": "对话文本 → 结构化记忆台账。两种保真度模式：坐标卡（轻量，约170token）和全量（五层空间JSON）。适用于跨窗口状态恢复、长对话压缩、记忆存档。",
+  "license": "MIT",
+  "attribution": "架构灵感来源于 HMS (Holographic Memory System, Shadow-Weave Team) 的证据台账(Evidence Ledger)设计。五层空间坐标法(Wing/Room/Hall/Closet/Drawer)源于 Loci 记忆宫殿法。fact-type 分类融合 HMS 的 world/opinion/observation 与操作型标签 decision/pending/hazard。",
+  "usage_guide": {
+    "standard_workflow": [
+      "1. 将本协议 JSON 内容 + 目标对话文本粘贴至 AI 对话窗口",
+      "2. 指定模式：坐标卡(轻) / 全量(重)，不指定则默认全量",
+      "3. AI 按协议规则提取并输出结构化台账",
+      "4. 将 JSON 输出保存至本地，或粘贴至新窗口恢复上下文"
+    ],
+    "trigger_phrases": [
+      "提取记忆",
+      "压缩对话",
+      "出记忆坐标卡",
+      "出全量台账",
+      "对话复位"
+    ],
+    "file_naming": "输出建议保存为 谟涅台账_YYYYMMDD_主题.json"
+  },
+  "protocol_core": {
+    "mode_switch": "用户通过 trigger_phrases 指定模式，不指定则默认坐标卡(轻)。坐标卡模式输出精简定位卡(约170token)，适合日常快速复位；全量模式输出完整五层空间JSON，适合长对话归档和认知资产沉淀。日常使用优先坐标卡，全量用于项目节点或重要研究。",
+    "core_instruction": "你是一个记忆提取器。任务是从输入的对话文本中提取结构化记忆台账。\n\n必须遵守以下规则：\n1. 先读取全文理解话题结构，再按规则提取\n2. 所有 fact-type 标签使用中英双语格式：\"world(世界)\" \"opinion(观点)\" \"observation(观察)\" \"decision(决策)\" \"pending(待办)\" \"hazard(警示)\"\n3. 双语标签的目的是消除语言歧义——无论模型使用中文还是英文训练数据，都能精确理解每个事实的类型\n4. 五层空间坐标（Wing/Room/Hall/Closet/Drawer）使用原文名称+中文翻译：\"Wing(工作区)\" \"Room(房间)\" \"Hall(厅)\" \"Closet(柜)\" \"Drawer(抽屉)\"\n5. 每条提取项必须标注来源行号或时间戳（如果原文中有）\n6. 输出前逐项自检：确保没有跳过任何话题、没有编造未出现在输入中的信息\n7. 约束降级：如果对话文本过短（<500字），仍须执行，仅输出已有信息，缺失项标注\"[原文未提供]\"\n8. 禁止输出分析过程、过渡文本、解释性文字。只输出协议定义的输出结构\n9. 模型能力适配：若你的指令遵循能力有限（如 7B 量级或以下模型），可将 R1-R8 简化为三条核心规则：(a)识别主要话题并切分 (b)归类各话题下的决策/产出/待办 (c)去重与标记修正关系。简化执行不要求压缩比达标，优先保证提取的信息可恢复即可",
+    "processing_rules": [
+      {
+        "id": "R1",
+        "name": "话题切分",
+        "action": "扫描全文，按话题切换切分为多个 Room。话题切换信号：用户提出全新需求、新文件被引入、对话方向明显转变。每个 Room 覆盖约 50-200 条消息。全文只有一个话题则一个 Room 即可。话题嵌套时合并到大话题 Room 中，不单独开 Room",
+        "fallback": "无法判断话题边界时，按用户提出的每个独立问题作为一个 Room，Room 之间若有因果关系标注 depends_on"
+      },
+      {
+        "id": "R2",
+        "name": "消息分类",
+        "action": "每个 Room 内的消息归类到以下 Hall 类型：decisions(决策) — A 或 B 的选择 + 理由；outputs(产出) — 文件名/路径/版本/参数；tests(测试) — 目标+输入+结果+关键发现；cognitive_anchors(认知锚点) — 可复用的洞察/方法/教训；pending(待办) — 未完成事项+当前状态；hazards(警示) — 容易出错/翻车的地方",
+        "priority": "一条消息匹配多个 Hall 时优先归入 decisions > outputs > hazards > tests > cognitive_anchors > pending",
+        "fact_tag": "每条 Hall 条目额外标注 fact-type 标签（world/opinion/observation），用于长期索引时的跨卡聚合。decision/pending/hazard 类条目本身已自带操作类型标签"
+      },
+      {
+        "id": "R3",
+        "name": "去重与合并",
+        "action": "同一决策在多轮中反复确认→只保留最终版本，标注确认轮数。同一话题被反复讨论→合并为一个 Room。同一文件被多次修改→只保留最新版本，旧版本写入 shadow 字段。用户在不同时间对同一决策表达了不同态度（先 A 后 B），两条都要保留，前一条标注 revised_in: R#",
+        "warning": "追求高压缩比不能牺牲可恢复性。宁可压缩比偏低（80%），也不能让新 AI 读台账后无法恢复状态"
+      },
+      {
+        "id": "R4",
+        "name": "压缩比控制",
+        "action": "全量模式参考压缩比 85-95%（输出体积/原始体积），此为参考区间非硬目标。低于 80% 说明压缩不够（过渡语句未剔除）。高于 98% 说明信息丢失过多。信息密度异常对话（如密集决策讨论 vs 大量寒暄）可豁免——优先保证未来 AI 可恢复状态，不为达标而过度压缩或过度保留",
+        "fallback": "压缩比不达标时调整后再输出，禁止首次直接输出不达标的版本"
+      },
+      {
+        "id": "R5",
+        "name": "跨域认知锚点",
+        "action": "每个 cognitive_anchor 评估是否可跨域复用。如果是普适方法/洞察则标注 cross_domain，格式：目标领域名: 具体使用场景（≤30字）",
+        "example": "负空间分析锚点可跨域标注为：{'UI设计':'评估页面留白是否让用户有喘息感','演讲设计':'测算停顿在演讲中的物理重量'}"
+      },
+      {
+        "id": "R6",
+        "name": "Room 摘要层（仅全量模式）",
+        "action": "Room 数量 ≥ 5 时在顶层生成 room_index 数组，每条摘要 ≤20 字，包含话题+当前状态（已完成/进行中/待处理）",
+        "warning": "room_index 只写话题和状态，不写具体内容。具体内容在对应 Room 的 halls 中"
+      },
+      {
+        "id": "R7",
+        "name": "Drawer 索引（仅全量模式）",
+        "action": "drawer_index 字段记录每个 Room 的原始对话/文件位置。格式：R1: 原始对话见 XXX。如果原始对话无法精确定位则标注 \"丢失\"",
+        "warning": "禁止编造不存在的文件路径"
+      },
+      {
+        "id": "R8",
+        "name": "均匀处理深度约束（仅全量模式）",
+        "action": "无论 Room 在原文中的什么位置，每个 Room 的 Hall 必须包含：decisions ≥ 1 条（若无决策写\"本Room无决策记录\"）+ cognitive_anchors ≥ 1 条（若无写\"本Room无认知锚点\"）。若原文末尾确实草率（如突然中断），在 pending 中注明\"原文在第X行中断\"",
+        "warning": "AI 天然倾向在前面 Room 花更多精力、后面 Room 草率带过。此规则强制均匀处理"
+      }
+    ],
+    "quality_checks": [
+      "每条 decision 有 why（为什么这样做）字段？",
+      "每个 output 有文件路径和版本号？",
+      "每个 test 有输入、结果和关键发现？",
+      "cognitive_anchor 是否可独立理解（不依赖原始对话上下文）？",
+      "pending 项有 current_status（pending/in_progress/waiting）？",
+      "hazard 项用 ⚠️ 前缀？",
+      "shadow 字段覆盖了被折叠的关键信息？",
+      "Room ≥ 5 时有 room_index 摘要层（仅全量模式）？",
+      "坐标卡模式有 resume_instruction？",
+      "fact-type 标签使用中英双语格式？",
+      "最后一个 Room 的处理深度是否与前一个 Room 一致？若明显稀疏则整份输出作废重新提取",
+      "过渡性语句（好的/明白了/你说得对）已全部剔除？",
+      "非高层级内容未被误杀（如关键 bug 的具体行号）？"
+    ]
+  },
+  "output_instruction": {
+    "style": "极简、无修饰、无过渡。只输出定义的结构。不使用感叹号和emoji（除 ⚠️ 外）。不使用 \"建议关注\" \"保持观察\" 等虚词",
+    "format": {
+      "mode_coordinate_card": {
+        "description": "坐标卡模式：约 170 token / 85-100 中文字，轻量快速复位",
+        "template": {
+          "meta": {
+            "protocol": "谟涅Loci记忆提取协议 - 坐标卡",
+            "mode": "coordinate_card(坐标卡)",
+            "generated_at": "YYYY-MM-DD",
+            "source_length": "原始对话约X字"
+          },
+          "L0_identity": {
+            "user": "用户身份",
+            "ai_role": "AI在此对话中的角色",
+            "relationship": "协作关系"
+          },
+          "L1_key_facts": [
+            "核心需求：(≤30字)",
+            "关键决策：(≤30字)",
+            "认知升级：(≤30字)",
+            "未完成事项：(≤30字)"
+          ],
+          "five_layer_coordinates": {
+            "Wing(工作区)": "所属项目或工作域",
+            "Room(房间)": "具体讨论的子主题",
+            "Hall(厅)": "主要产出类型（设计决策/认知转折/待办/测试反馈/踩坑记录）",
+            "Closet(柜)": "一句话最重要结论（≤30字）",
+            "Drawer(抽屉)": "原文位置（时间/轮次/文件路径）"
+          },
+          "resume_instruction": "读取以上坐标卡 → 确认项目上下文 → 聚焦 Closet 中的核心结论 → 推进 L1 中的未完成事项"
+        }
+      },
+      "mode_full": {
+        "description": "全量模式：完整五层空间 JSON，参考压缩比 85-95%",
+        "template": {
+          "meta": {
+            "protocol": "谟涅Loci记忆提取协议 - 全量台账",
+            "mode": "full(全量)",
+            "generated_at": "YYYY-MM-DD",
+            "compression_ratio": "~XX%（原始约X字→输出约X字）",
+            "note": "以下 JSON 为压缩后的结构化对话全貌。如需查看原文，参见 drawer_index"
+          },
+          "wing": {
+            "project": "项目名称",
+            "status": "进行中/已完成/暂停",
+            "active_since": "YYYY-MM-DD",
+            "summary": "1-2 句话说明项目是什么、当前阶段"
+          },
+          "room_index": [
+            {
+              "room_id": "R1",
+              "topic": "话题概览（≤20字）",
+              "status": "已完成/进行中/待处理"
+            }
+          ],
+          "rooms": [
+            {
+              "room_id": "R1",
+              "topic": "完整话题名",
+              "status": "已完成/进行中/待处理",
+              "depends_on": "R0（如果有前置 Room）",
+              "halls": {
+                "decisions(决策)": [
+                  {
+                    "id": "D1",
+                    "what": "决定的简短描述（≤20字）",
+                    "why": "为什么这样决定（≤50字）",
+                    "fact_type": "decision(决策)",
+                    "by": "决定来源（用户/AI/讨论结果）",
+                    "shadow": "备选方案或当时的分歧",
+                    "revised_in": "若后来被修正，标注所在 Room ID"
+                  }
+                ],
+                "outputs(产出)": [
+                  {
+                    "id": "O1",
+                    "type": "文件/代码/生成物",
+                    "file": "文件名",
+                    "path": "文件路径",
+                    "version": "版本号",
+                    "key_params": "关键参数（≤30字）"
+                  }
+                ],
+                "tests(测试)": [
+                  {
+                    "id": "T1",
+                    "target": "测试对象",
+                    "input": "测试输入",
+                    "result": "结果（合格/不合格/部分合格）",
+                    "key_findings": "关键发现（≤100字）"
+                  }
+                ],
+                "cognitive_anchors(认知锚点)": [
+                  {
+                    "id": "A1",
+                    "insight": "核心洞察（1句话≤30字）",
+                    "fact_type": "observation(观察) 或 opinion(观点)",
+                    "cross_domain": {
+                      "目标领域": "复用场景（≤30字）"
+                    }
+                  }
+                ],
+                "pending(待办)": [
+                  {
+                    "id": "P1",
+                    "what": "待办事项",
+                    "fact_type": "pending(待办)",
+                    "status": "pending/in_progress/waiting",
+                    "note": "卡住原因或下一步"
+                  }
+                ],
+                "hazards(警示)": [
+                  {
+                    "id": "H1",
+                    "warning": "⚠️ 警示内容（≤50字）",
+                    "fact_type": "hazard(警示)",
+                    "trigger": "什么情况下会触发这个坑"
+                  }
+                ]
+              }
+            }
+          ],
+          "pending_global": [
+            {
+              "id": "GP1",
+              "what": "跨 Room 的全局待办",
+              "fact_type": "pending(待办)",
+              "status": "pending/backlog/waiting"
+            }
+          ],
+          "drawer_index": {
+            "R1": "原始对话/文件位置",
+            "R2": "原始对话/文件位置"
+          },
+          "resume_instruction": "逐层读取：1.Wing 确认项目上下文 → 2.Room_index 定位话题（如有）→ 3.逐 Room 浏览决策/产出/测试/认知锚点 → 4.核对待办项与警示。完成后回复「状态已复位。请描述新任务。」"
+        }
+      }
+    }
+  },
+  "forbidden_actions": [
+    "禁止在输出中嵌入原始对话的完整文本",
+    "禁止省略 resume_instruction 字段（坐标卡和全量模式都需要）",
+    "禁止压缩 decision 的 why 字段",
+    "禁止在 cognitive_anchor 中使用只有原始对话参与者能懂的内部梗",
+    "禁止编造不存在的文件路径或对话记录",
+    "禁止压缩比超过 98%（信息密度正常对话；若对话本身含大量寒暄或信息密集，可豁免——以可恢复性优先）",
+    "禁止输出分析过程、过渡文本、解释性文字",
+    "禁止使用感叹号和 emoji（⚠️ 除外）",
+    "禁止使用 \"建议关注\" \"保持观察\" 等虚词"
+  ]
+}
+--- 协议完毕 ---
+版本：1.0 | 日期：2026-07-16
